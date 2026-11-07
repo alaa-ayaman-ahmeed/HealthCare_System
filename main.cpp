@@ -3,6 +3,10 @@
 #include <cstring>
 #include <cstdio>
 #include "StorageManager.h"
+#include "PrimaryIndex.h"
+#include "SecondaryIndex.h"
+#include <algorithm>
+#include <iterator>
 
 using namespace std;
 
@@ -433,5 +437,78 @@ check("New appointment ID found",
 primary.printIndexes();
 
 
+cout << "\nSECONDARY INDEX TESTS\n";
+
+// Fresh primary index built from the files (D001-D005, A001-A010)
+PrimaryIndex prim(storage);
+prim.buildIndexes();
+
+SecondaryIndex docNameIdx("docname_keys.idx", "docname_list.dat", 30);
+SecondaryIndex docSpecIdx("docspec_keys.idx", "docspec_list.dat", 20);
+SecondaryIndex appDocIdx ("appdoc_keys.idx",  "appdoc_list.dat",  15);
+docNameIdx.clear();
+docSpecIdx.clear();
+appDocIdx.clear();
+
+// Build the secondary indexes from the data files (the primary index gives each record's offset)
+for (const auto& e : prim.getDoctorsIndex()) {
+    char rec[DOCTOR_RECORD_SIZE];
+    storage.readAt("doctors.dat", e.offset, rec, DOCTOR_RECORD_SIZE);
+    docNameIdx.add(string(rec + 15, 30), e.key);   // name at byte 15
+    docSpecIdx.add(string(rec + 45, 20), e.key);   // specialty at byte 45
+}
+for (const auto& e : prim.getAppointmentsIndex()) {
+    char rec[APPOINTMENT_RECORD_SIZE];
+    storage.readAt("appointments.dat", e.offset, rec, APPOINTMENT_RECORD_SIZE);
+    appDocIdx.add(string(rec + 45, 15), e.key);    // doctor ID at byte 45
+}
+
+check("Sec - search doctor name",
+      docNameIdx.search("Ahmed Ali") == vector<string>{"D001"});
+check("Sec - search specialty",
+      docSpecIdx.search("Cardiology") == vector<string>{"D001"});
+check("Sec - appointments of D001",
+      appDocIdx.search("D001") == vector<string>{"A001", "A006"});
+check("Sec - missing key is empty",
+      appDocIdx.search("D999").empty());
+
+// Binding with the primary index: secondary gives IDs, primary gives offsets
+cout << "Appointments of D001:\n";
+for (const string& id : appDocIdx.search("D001")) {
+    int pos = prim.findAppointment(id);
+    int off = prim.getAppointmentsIndex()[pos].offset;
+    char rec[APPOINTMENT_RECORD_SIZE];
+    storage.readAt("appointments.dat", off, rec, APPOINTMENT_RECORD_SIZE);
+    cout << "  " << id << " at offset " << off << " date " << string(rec + 15, 30) << endl;
+}
+
+// Query with two secondary indexes: name AND specialty
+vector<string> byName = docNameIdx.search("Ahmed Ali");
+vector<string> bySpec = docSpecIdx.search("Cardiology");
+vector<string> both;
+set_intersection(byName.begin(), byName.end(), bySpec.begin(), bySpec.end(), back_inserter(both));
+check("Sec - name AND specialty query", both == vector<string>{"D001"});
+
+// Update Doctor ID D003 -> D000 (menu option 9): primary + all 3 secondary indexes
+prim.updateDoctorID("D003", "D000");
+docNameIdx.replacePrimary("Omar Adel", "D003", "D000");
+docSpecIdx.replacePrimary("Surgery", "D003", "D000");
+appDocIdx.renameKey("D003", "D000");
+check("Sec - ID update in name index",
+      docNameIdx.search("Omar Adel") == vector<string>{"D000"});
+check("Sec - appointments moved to new doctor ID",
+      appDocIdx.search("D000") == vector<string>{"A003", "A008"});
+check("Sec - old doctor ID has no appointments",
+      appDocIdx.search("D003").empty());
+
+// Delete doctor D002
+docNameIdx.remove("Mona Samir", "D002");
+docSpecIdx.remove("Neurology", "D002");
+check("Sec - deleted doctor gone from name index", docNameIdx.search("Mona Samir").empty());
+check("Sec - deleted doctor gone from specialty index", docSpecIdx.search("Neurology").empty());
+
+docNameIdx.print();
+docSpecIdx.print();
+appDocIdx.print();
     return 0;
 }
