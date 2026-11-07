@@ -1,4 +1,3 @@
-
 #include <iostream>
 #include <fstream>
 #include <cstring>
@@ -285,8 +284,154 @@ int main() {
     check("Test 13 - Existing record preserved",
         memcmp(doctorBuffer, readDoctor, DOCTOR_RECORD_SIZE) == 0);
 
+   // Prepare unique records for Primary Index testing
+   // Doctors: 5 records
+char doctorData[DOCTOR_RECORD_SIZE];
+
+storage.saveDoctor("D001", "Ahmed Ali", "Cardiology", "Cairo", doctorData);
+storage.writeDoctorRecord(0, doctorData);
+
+storage.saveDoctor("D002", "Mona Samir", "Neurology", "Giza", doctorData);
+storage.writeDoctorRecord(1, doctorData);
+
+storage.saveDoctor("D003", "Omar Adel", "Surgery", "Cairo", doctorData);
+storage.writeDoctorRecord(2, doctorData);
+
+storage.saveDoctor("D004", "Sara Hany", "Pediatrics", "Giza", doctorData);
+storage.writeDoctorRecord(3, doctorData);
+
+storage.saveDoctor("D005", "Ali Hassan", "Dermatology", "Cairo", doctorData);
+storage.writeDoctorRecord(4, doctorData);
+
+
+// Appointments: 10 records
+char appointmentData[APPOINTMENT_RECORD_SIZE];
+
+storage.saveAppointment("A001", "2026-11-05", "D001", appointmentData);
+storage.writeAppointmentRecord(0, appointmentData);
+
+storage.saveAppointment("A002", "2026-11-06", "D002", appointmentData);
+storage.writeAppointmentRecord(1, appointmentData);
+
+storage.saveAppointment("A003", "2026-11-07", "D003", appointmentData);
+storage.writeAppointmentRecord(2, appointmentData);
+
+storage.saveAppointment("A004", "2026-11-08", "D004", appointmentData);
+storage.writeAppointmentRecord(3, appointmentData);
+
+storage.saveAppointment("A005", "2026-11-09", "D005", appointmentData);
+storage.writeAppointmentRecord(4, appointmentData);
+
+storage.saveAppointment("A006", "2026-11-10", "D001", appointmentData);
+storage.writeAppointmentRecord(5, appointmentData);
+
+storage.saveAppointment("A007", "2026-11-11", "D002", appointmentData);
+storage.writeAppointmentRecord(6, appointmentData);
+
+storage.saveAppointment("A008", "2026-11-12", "D003", appointmentData);
+storage.writeAppointmentRecord(7, appointmentData);
+
+storage.saveAppointment("A009", "2026-11-13", "D004", appointmentData);
+storage.writeAppointmentRecord(8, appointmentData);
+
+storage.saveAppointment("A010", "2026-11-14", "D005", appointmentData);
+storage.writeAppointmentRecord(9, appointmentData); 
+
 
     cout << "\nAll tests completed!" << endl;
+
+// Primary index test
+
+cout << "PRIMARY INDEX TESTS \n";
+
+PrimaryIndex primary(storage);
+
+// Test 1: Build indexes from the existing data files
+check("Build indexes", primary.buildIndexes());
+
+// Test 2: Check number of records in each index
+check("Doctors index size",
+      primary.getDoctorsIndex().size() == 5);
+
+check("Appointments index size",
+      primary.getAppointmentsIndex().size() == 10);
+
+// Test 3: Search for existing records
+check("Find doctor D003",
+      primary.findDoctor("D003") != -1);
+
+check("Find appointment A005",
+      primary.findAppointment("A005") != -1);
+
+// Test 4: Search for missing records
+check("Find missing doctor",
+      primary.findDoctor("D999") == -1);
+
+check("Find missing appointment",
+      primary.findAppointment("A999") == -1);
+
+// Test 5: Check returned offsets
+int doctorPosition = primary.findDoctor("D003");
+
+check("Doctor D003 offset",
+      doctorPosition != -1 &&
+      primary.getDoctorsIndex()[doctorPosition].offset == 194);
+
+int appointmentPosition = primary.findAppointment("A005");
+
+check("Appointment A005 offset",
+      appointmentPosition != -1 &&
+      primary.getAppointmentsIndex()[appointmentPosition].offset == 244);
+
+// Test 6: Add new entries
+check("Add doctor D006",
+      primary.addDoctor("D006", 479));
+
+check("Add appointment A011",
+      primary.addAppointment("A011", 604));
+
+// Test 7: Prevent duplicate keys
+check("Reject duplicate doctor",
+      !primary.addDoctor("D001", 574));
+
+check("Reject duplicate appointment",
+      !primary.addAppointment("A001", 664));
+
+// Test 8: Delete entries
+check("Delete doctor D002",
+      primary.deleteDoctor("D002"));
+
+check("Delete appointment A003",
+      primary.deleteAppointment("A003"));
+
+check("Deleted doctor not found",
+      primary.findDoctor("D002") == -1);
+
+check("Deleted appointment not found",
+      primary.findAppointment("A003") == -1);
+
+// Test 9: Update primary keys
+check("Update doctor ID",
+      primary.updateDoctorID("D003", "D000"));
+
+check("Update appointment ID",
+      primary.updateAppointmentID("A005", "A000"));
+
+check("Old doctor ID not found",
+      primary.findDoctor("D003") == -1);
+
+check("New doctor ID found",
+      primary.findDoctor("D000") != -1);
+
+check("Old appointment ID not found",
+      primary.findAppointment("A005") == -1);
+
+check("New appointment ID found",
+      primary.findAppointment("A000") != -1);
+
+// Test 10: Print final indexes
+primary.printIndexes();
+
 
     return 0;
 }
