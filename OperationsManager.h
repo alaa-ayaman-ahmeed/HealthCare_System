@@ -5,6 +5,7 @@
 #include "StorageManager.h"
 #include "PrimaryIndex.h"
 #include "SecondaryIndex.h"
+#include <vector>
 
 #include <string>
 using namespace std;
