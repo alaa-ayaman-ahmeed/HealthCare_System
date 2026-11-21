@@ -1,717 +1,473 @@
 
 #include <iostream>
-#include <fstream>
-#include <cstring>
-#include <cstdio>
 #include <string>
-#include <vector>
-#include <algorithm>
-#include <iterator>
+#include <limits>
+#include <cstdlib>
 
 #include "StorageManager.h"
 #include "PrimaryIndex.h"
 #include "SecondaryIndex.h"
 #include "OperationsManager.h"
+#include "QueryEngine.h"
 
 using namespace std;
 
-void check(string testName, bool result) {
-    cout << testName << ": ";
 
-    if (result)
-        cout << "PASS" << endl;
-    else
-        cout << "FAIL" << endl;
-}
-
-int main() {
-
-    StorageManager storage;
-
-    // Remove old files to start with a clean test
-    remove("doctors.dat");
-    remove("appointments.dat");
-
-    // =====================================
-    // TEST 1: Initialize files
-    // =====================================
-
-    storage.initializeFiles();
-
-    check("Test 1 - Doctors file created",
-        ifstream("doctors.dat").good());
-
-    check("Test 1 - Appointments file created",
-        ifstream("appointments.dat").good());
-
-    // =====================================
-    // TEST 2: Check initial headers
-    // =====================================
-
-    check("Test 2 - Doctors header is -1",
-        storage.readHeader("doctors.dat") == -1);
-
-    check("Test 2 - Appointments header is -1",
-        storage.readHeader("appointments.dat") == -1);
-
-    // =====================================
-    // TEST 3: Check initial file sizes
-    // =====================================
-
-    ifstream docFile("doctors.dat", ios::binary | ios::ate);
-    ifstream appFile("appointments.dat", ios::binary | ios::ate);
-
-    check("Test 3 - Doctors file is 4 bytes",
-        docFile.tellg() == 4);
-
-    check("Test 3 - Appointments file is 4 bytes",
-        appFile.tellg() == 4);
-
-    docFile.close();
-    appFile.close();
-
-    // =====================================
-    // TEST 4: Update headers
-    // =====================================
-
-    storage.writeHeader("doctors.dat", 100);
-    storage.writeHeader("appointments.dat", 200);
-
-    check("Test 4 - Doctors header updated",
-        storage.readHeader("doctors.dat") == 100);
-
-    check("Test 4 - Appointments header updated",
-        storage.readHeader("appointments.dat") == 200);
-
-    // Restore initial headers for later tests
-    storage.writeHeader("doctors.dat", -1);
-    storage.writeHeader("appointments.dat", -1);
-
-    // =====================================
-    // TEST 5: Serialize Doctor record
-    // =====================================
-
-    char doctorBuffer[DOCTOR_RECORD_SIZE];
-
-    storage.saveDoctor(
-        "D001",
-        "Ahmed Ali",
-        "Cardiology",
-        "Cairo",
-        doctorBuffer
-    );
-
-    check("Test 5 - Doctor ID is padded correctly",
-        string(doctorBuffer, 15) == "D001           ");
-
-    check("Test 5 - Doctor name is padded correctly",
-        string(doctorBuffer + 15, 30) == "Ahmed Ali                     ");
-
-    check("Test 5 - Doctor specialty is padded correctly",
-        string(doctorBuffer + 45, 20) == "Cardiology          ");
-
-    check("Test 5 - Doctor address is padded correctly",
-        string(doctorBuffer + 65, 30) == "Cairo                         ");
-
-    // =====================================
-    // TEST 6: Serialize Appointment record
-    // =====================================
-
-    char appointmentBuffer[APPOINTMENT_RECORD_SIZE];
-
-    storage.saveAppointment(
-        "A001",
-        "2026-11-05",
-        "D001",
-        appointmentBuffer
-    );
-
-    check("Test 6 - Appointment ID padded correctly",
-        string(appointmentBuffer, 15) == "A001           ");
-
-    check("Test 6 - Appointment date padded correctly",
-        string(appointmentBuffer + 15, 30) == "2026-11-05                    ");
-
-    check("Test 6 - Appointment doctor ID padded correctly",
-        string(appointmentBuffer + 45, 15) == "D001           ");
-
-    // =====================================
-    // TEST 7: Test long strings (truncation)
-    // =====================================
-
-    char longDoctor[DOCTOR_RECORD_SIZE];
-
-    storage.saveDoctor(
-        "12345678901234567890",
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789",
-        "CardiologyDepartment",
-        "12345678901234567890123456789012345",
-        longDoctor
-    );
-
-    check("Test 7 - Long ID truncated to 15 bytes",
-        string(longDoctor, 15) == "123456789012345");
-
-    check("Test 7 - Long name truncated to 30 bytes",
-        string(longDoctor + 15, 30) == "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234");
-
-    check("Test 7 - Long specialty truncated to 20 bytes",
-        string(longDoctor + 45, 20) == "CardiologyDepartment");
-
-    check("Test 7 - Long address truncated to 30 bytes",
-        string(longDoctor + 65, 30) == "123456789012345678901234567890");
-
-    // =====================================
-    // TEST 8: Write Doctor using RRN
-    // =====================================
-
-    storage.writeDoctorRecord(0, doctorBuffer);
-    storage.writeDoctorRecord(1, doctorBuffer);
-
-    check("Test 8 - Doctor 1 written at offset 4", true);
-    check("Test 8 - Doctor 2 written at offset 99", true);
-
-    // =====================================
-    // TEST 9: Write Appointment using RRN
-    // =====================================
-
-    storage.writeAppointmentRecord(0, appointmentBuffer);
-    storage.writeAppointmentRecord(1, appointmentBuffer);
-
-    check("Test 9 - Appointment 1 written at offset 4", true);
-    check("Test 9 - Appointment 2 written at offset 64", true);
-
-    // =====================================
-    // TEST 10: Read Doctor from file
-    // =====================================
-
-    char readDoctor[DOCTOR_RECORD_SIZE];
-
-    storage.readAt(
-        "doctors.dat",
-        4,
-        readDoctor,
-        DOCTOR_RECORD_SIZE
-    );
-
-    check("Test 10 - Doctor record read correctly",
-        memcmp(doctorBuffer, readDoctor, DOCTOR_RECORD_SIZE) == 0);
-
-    storage.readAt(
-        "doctors.dat",
-        99,
-        readDoctor,
-        DOCTOR_RECORD_SIZE
-    );
-
-    check("Test 10 - Second Doctor read correctly",
-        memcmp(doctorBuffer, readDoctor, DOCTOR_RECORD_SIZE) == 0);
-
-    // =====================================
-    // TEST 11: Read Appointment from file
-    // =====================================
-
-    char readAppointment[APPOINTMENT_RECORD_SIZE];
-
-    storage.readAt(
-        "appointments.dat",
-        4,
-        readAppointment,
-        APPOINTMENT_RECORD_SIZE
-    );
-
-    check("Test 11 - Appointment record read correctly",
-        memcmp(appointmentBuffer, readAppointment,
-            APPOINTMENT_RECORD_SIZE) == 0);
-
-    storage.readAt(
-        "appointments.dat",
-        64,
-        readAppointment,
-        APPOINTMENT_RECORD_SIZE
-    );
-
-    check("Test 11 - Second Appointment read correctly",
-        memcmp(appointmentBuffer, readAppointment,
-            APPOINTMENT_RECORD_SIZE) == 0);
-
-    // =====================================
-    // TEST 12: Check final file sizes
-    // =====================================
-
-    ifstream doctorsSize("doctors.dat", ios::binary | ios::ate);
-    ifstream appointmentsSize("appointments.dat", ios::binary | ios::ate);
-
-    check("Test 12 - Doctors file size is 194 bytes",
-        doctorsSize.tellg() == 194);
-
-    check("Test 12 - Appointments file size is 124 bytes",
-        appointmentsSize.tellg() == 124);
-
-    doctorsSize.close();
-    appointmentsSize.close();
-
-    // =====================================
-    // TEST 13: Initialize existing files
-    // =====================================
-
-    storage.writeHeader("doctors.dat", 4);
-
-    storage.initializeFiles();
-
-    check("Test 13 - Existing header preserved",
-        storage.readHeader("doctors.dat") == 4);
-
-    storage.readAt("doctors.dat", 4, readDoctor, DOCTOR_RECORD_SIZE);
-
-    check("Test 13 - Existing record preserved",
-        memcmp(doctorBuffer, readDoctor, DOCTOR_RECORD_SIZE) == 0);
-
-    // =====================================
-    // PREPARE DATA FOR INDEX TESTING
-    // =====================================
-
-    char doctorData[DOCTOR_RECORD_SIZE];
-
-    storage.saveDoctor("D001", "Ahmed Ali", "Cardiology", "Cairo", doctorData);
-    storage.writeDoctorRecord(0, doctorData);
-
-    storage.saveDoctor("D002", "Mona Samir", "Neurology", "Giza", doctorData);
-    storage.writeDoctorRecord(1, doctorData);
-
-    storage.saveDoctor("D003", "Omar Adel", "Surgery", "Cairo", doctorData);
-    storage.writeDoctorRecord(2, doctorData);
-
-    storage.saveDoctor("D004", "Sara Hany", "Pediatrics", "Giza", doctorData);
-    storage.writeDoctorRecord(3, doctorData);
-
-    storage.saveDoctor("D005", "Ali Hassan", "Dermatology", "Cairo", doctorData);
-    storage.writeDoctorRecord(4, doctorData);
-
-    char appointmentData[APPOINTMENT_RECORD_SIZE];
-
-    storage.saveAppointment("A001", "2026-11-05", "D001", appointmentData);
-    storage.writeAppointmentRecord(0, appointmentData);
-
-    storage.saveAppointment("A002", "2026-11-06", "D002", appointmentData);
-    storage.writeAppointmentRecord(1, appointmentData);
-
-    storage.saveAppointment("A003", "2026-11-07", "D003", appointmentData);
-    storage.writeAppointmentRecord(2, appointmentData);
-
-    storage.saveAppointment("A004", "2026-11-08", "D004", appointmentData);
-    storage.writeAppointmentRecord(3, appointmentData);
-
-    storage.saveAppointment("A005", "2026-11-09", "D005", appointmentData);
-    storage.writeAppointmentRecord(4, appointmentData);
-
-    storage.saveAppointment("A006", "2026-11-10", "D001", appointmentData);
-    storage.writeAppointmentRecord(5, appointmentData);
-
-    storage.saveAppointment("A007", "2026-11-11", "D002", appointmentData);
-    storage.writeAppointmentRecord(6, appointmentData);
-
-    storage.saveAppointment("A008", "2026-11-12", "D003", appointmentData);
-    storage.writeAppointmentRecord(7, appointmentData);
-
-    storage.saveAppointment("A009", "2026-11-13", "D004", appointmentData);
-    storage.writeAppointmentRecord(8, appointmentData);
-
-    storage.saveAppointment("A010", "2026-11-14", "D005", appointmentData);
-    storage.writeAppointmentRecord(9, appointmentData);
-
-    cout << "\nAll initial tests completed!\n";
-
-    // =====================================
-    // PRIMARY INDEX TESTS
-    // =====================================
-
-    cout << "\nPRIMARY INDEX TESTS\n";
-
-    PrimaryIndex primary(storage);
-
-    check("Build indexes", primary.buildIndexes());
-
-    check("Doctors index size",
-        primary.getDoctorsIndex().size() == 5);
-
-    check("Appointments index size",
-        primary.getAppointmentsIndex().size() == 10);
-
-    check("Find doctor D003",
-        primary.findDoctor("D003") != -1);
-
-    check("Find appointment A005",
-        primary.findAppointment("A005") != -1);
-
-    check("Find missing doctor",
-        primary.findDoctor("D999") == -1);
-
-    check("Find missing appointment",
-        primary.findAppointment("A999") == -1);
-
-    int doctorPosition = primary.findDoctor("D003");
-
-    check("Doctor D003 offset",
-        doctorPosition != -1 &&
-        primary.getDoctorsIndex()[doctorPosition].offset == 194);
-
-    int appointmentPosition = primary.findAppointment("A005");
-
-    check("Appointment A005 offset",
-        appointmentPosition != -1 &&
-        primary.getAppointmentsIndex()[appointmentPosition].offset == 244);
-
-    check("Add doctor D006",
-        primary.addDoctor("D006", 479));
-
-    check("Add appointment A011",
-        primary.addAppointment("A011", 604));
-
-    check("Reject duplicate doctor",
-        !primary.addDoctor("D001", 574));
-
-    check("Reject duplicate appointment",
-        !primary.addAppointment("A001", 664));
-
-    check("Delete doctor D002",
-        primary.deleteDoctor("D002"));
-
-    check("Delete appointment A003",
-        primary.deleteAppointment("A003"));
-
-    check("Deleted doctor not found",
-        primary.findDoctor("D002") == -1);
-
-    check("Deleted appointment not found",
-        primary.findAppointment("A003") == -1);
-
-    check("Update doctor ID",
-        primary.updateDoctorID("D003", "D000"));
-
-    check("Update appointment ID",
-        primary.updateAppointmentID("A005", "A000"));
-
-    check("Old doctor ID not found",
-        primary.findDoctor("D003") == -1);
-
-    check("New doctor ID found",
-        primary.findDoctor("D000") != -1);
-
-    check("Old appointment ID not found",
-        primary.findAppointment("A005") == -1);
-
-    check("New appointment ID found",
-        primary.findAppointment("A000") != -1);
-
-    primary.printIndexes();
-
-    // =====================================
-    // SECONDARY INDEX TESTS
-    // =====================================
-
-    cout << "\nSECONDARY INDEX TESTS\n";
-
-    PrimaryIndex prim(storage);
-    prim.buildIndexes();
-
-    SecondaryIndex docNameIdx("docname_keys.idx", "docname_list.dat", 30);
-    SecondaryIndex docSpecIdx("docspec_keys.idx", "docspec_list.dat", 20);
-    SecondaryIndex appDocIdx("appdoc_keys.idx", "appdoc_list.dat", 15);
-
+// =====================================
+// Rebuild Secondary Indexes
+// =====================================
+
+bool rebuildSecondaryIndexes(
+    StorageManager& storage,
+    PrimaryIndex& primary,
+    SecondaryIndex& docNameIdx,
+    SecondaryIndex& docSpecIdx,
+    SecondaryIndex& appDocIdx
+) {
+
+    // Start with empty secondary indexes
     docNameIdx.clear();
     docSpecIdx.clear();
     appDocIdx.clear();
 
-    for (const auto& e : prim.getDoctorsIndex()) {
-        char rec[DOCTOR_RECORD_SIZE];
 
-        storage.readAt("doctors.dat", e.offset, rec, DOCTOR_RECORD_SIZE);
+    // Build Doctor Name and Specialty indexes
+    for (const auto& entry : primary.getDoctorsIndex()) {
 
-        docNameIdx.add(string(rec + 15, 30), e.key);
-        docSpecIdx.add(string(rec + 45, 20), e.key);
+        char record[DOCTOR_RECORD_SIZE];
+
+        storage.readAt(
+            "doctors.dat",
+            entry.offset,
+            record,
+            DOCTOR_RECORD_SIZE
+        );
+
+        string doctorName(record + 15, 30);
+        string doctorSpecialty(record + 45, 20);
+
+        if (!docNameIdx.add(doctorName, entry.key))
+            return false;
+
+        if (!docSpecIdx.add(doctorSpecialty, entry.key))
+            return false;
     }
 
-    for (const auto& e : prim.getAppointmentsIndex()) {
-        char rec[APPOINTMENT_RECORD_SIZE];
 
-        storage.readAt("appointments.dat", e.offset, rec, APPOINTMENT_RECORD_SIZE);
+    // Build Appointments Doctor ID index
+    for (const auto& entry : primary.getAppointmentsIndex()) {
 
-        appDocIdx.add(string(rec + 45, 15), e.key);
+        char record[APPOINTMENT_RECORD_SIZE];
+
+        storage.readAt(
+            "appointments.dat",
+            entry.offset,
+            record,
+            APPOINTMENT_RECORD_SIZE
+        );
+
+        string doctorID(record + 45, 15);
+
+        if (!appDocIdx.add(doctorID, entry.key))
+            return false;
     }
 
-    check("Sec - search doctor name",
-        docNameIdx.search("Ahmed Ali") == vector<string>{"D001"});
+    return true;
+}
 
-    check("Sec - search specialty",
-        docSpecIdx.search("Cardiology") == vector<string>{"D001"});
 
-    check("Sec - appointments of D001",
-        appDocIdx.search("D001") == vector<string>{"A001", "A006"});
+// =====================================
+// Main Menu
+// =====================================
 
-    check("Sec - missing key is empty",
-        appDocIdx.search("D999").empty());
+void displayMenu() {
 
-    cout << "Appointments of D001:\n";
+    cout << "\n";
+    cout << "========================================\n";
+    cout << "       HEALTHCARE MANAGEMENT SYSTEM\n";
+    cout << "========================================\n";
 
-    for (const string& id : appDocIdx.search("D001")) {
-        int pos = prim.findAppointment(id);
-        int off = prim.getAppointmentsIndex()[pos].offset;
+    cout << "1.  Add New Doctor\n";
+    cout << "2.  Add New Appointment\n";
+    cout << "3.  Update Doctor Name\n";
+    cout << "4.  Update Doctor ID\n";
+    cout << "5.  Update Appointment Date\n";
+    cout << "6.  Delete Appointment\n";
+    cout << "7.  Delete Doctor\n";
+    cout << "8.  Print Doctor Info\n";
+    cout << "9.  Print Appointment Info\n";
+    cout << "10. Write Query\n";
+    cout << "11. Exit\n";
 
-        char rec[APPOINTMENT_RECORD_SIZE];
+    cout << "========================================\n";
+    cout << "Enter your choice: ";
+}
 
-        storage.readAt("appointments.dat", off, rec, APPOINTMENT_RECORD_SIZE);
 
-        cout << "  " << id << " at offset " << off
-             << " date " << string(rec + 15, 30) << endl;
+// =====================================
+// Main Function
+// =====================================
+
+int main() {
+
+    // ---------------------------------
+    // 1. Create Storage Manager
+    // ---------------------------------
+
+    StorageManager storage;
+
+    storage.initializeFiles();
+
+
+    // ---------------------------------
+    // 2. Create and Build Primary Index
+    // ---------------------------------
+
+    PrimaryIndex primary(storage);
+
+    if (!primary.buildIndexes()) {
+
+        cout << "Error: Could not build Primary Indexes.\n";
+        return 1;
     }
 
-    vector<string> byName = docNameIdx.search("Ahmed Ali");
-    vector<string> bySpec = docSpecIdx.search("Cardiology");
-    vector<string> both;
 
-    set_intersection(
-        byName.begin(), byName.end(),
-        bySpec.begin(), bySpec.end(),
-        back_inserter(both)
+    // ---------------------------------
+    // 3. Create Secondary Indexes
+    // ---------------------------------
+
+    SecondaryIndex docNameIdx(
+        "docname_keys.idx",
+        "docname_list.dat",
+        30
     );
 
-    check("Sec - name AND specialty query",
-        both == vector<string>{"D001"});
+    SecondaryIndex docSpecIdx(
+        "docspec_keys.idx",
+        "docspec_list.dat",
+        20
+    );
 
-    // Update Doctor ID D003 -> D000 in the index tests
-    prim.updateDoctorID("D003", "D000");
+    SecondaryIndex appDocIdx(
+        "appdoc_keys.idx",
+        "appdoc_list.dat",
+        15
+    );
 
-    docNameIdx.replacePrimary("Omar Adel", "D003", "D000");
-    docSpecIdx.replacePrimary("Surgery", "D003", "D000");
-    appDocIdx.renameKey("D003", "D000");
 
-    check("Sec - ID update in name index",
-        docNameIdx.search("Omar Adel") == vector<string>{"D000"});
+    // ---------------------------------
+    // 4. Rebuild Secondary Indexes
+    // ---------------------------------
 
-    check("Sec - appointments moved to new doctor ID",
-        appDocIdx.search("D000") == vector<string>{"A003", "A008"});
+    if (!rebuildSecondaryIndexes(
+        storage,
+        primary,
+        docNameIdx,
+        docSpecIdx,
+        appDocIdx
+    )) {
 
-    check("Sec - old doctor ID has no appointments",
-        appDocIdx.search("D003").empty());
+        cout << "Error: Could not rebuild Secondary Indexes.\n";
+        return 1;
+    }
 
-    docNameIdx.remove("Mona Samir", "D002");
-    docSpecIdx.remove("Neurology", "D002");
 
-    check("Sec - deleted doctor gone from name index",
-        docNameIdx.search("Mona Samir").empty());
-
-    check("Sec - deleted doctor gone from specialty index",
-        docSpecIdx.search("Neurology").empty());
-
-    docNameIdx.print();
-    docSpecIdx.print();
-    appDocIdx.print();
-
-    // =====================================
-    // OPERATIONS MANAGER TESTS
-    // =====================================
-
-    cout << "\nOPERATIONS MANAGER TESTS\n";
+    // ---------------------------------
+    // 5. Create Operations Manager
+    // ---------------------------------
 
     OperationsManager operations(
         storage,
-        prim,
+        primary,
         docNameIdx,
         docSpecIdx,
         appDocIdx
     );
 
-    // The previous Secondary Index test changed D003 to D000
-    // in the indexes only. Synchronize the data file as well.
-    check("Restore doctor ID consistency",
-        operations.updateDoctorID("D000", "D003"));
 
-    // -------------------------------------
-    // ADD TESTS
-    // -------------------------------------
+    // ---------------------------------
+    // 6. Create Query Engine
+    // ---------------------------------
 
-    cout << "\nADD TESTS\n";
-
-    check("Add new doctor D006",
-        operations.addDoctor(
-            "D006",
-            "Khaled Mostafa",
-            "Ophthalmology",
-            "Cairo"
-        ));
-
-    check("New doctor exists in primary index",
-        prim.findDoctor("D006") != -1);
-
-    check("New doctor exists in name index",
-        docNameIdx.search("Khaled Mostafa") == vector<string>{"D006"});
-
-    check("New doctor exists in specialty index",
-        docSpecIdx.search("Ophthalmology") == vector<string>{"D006"});
-
-    check("Reject duplicate doctor ID",
-        !operations.addDoctor(
-            "D006",
-            "Another Doctor",
-            "Surgery",
-            "Giza"
-        ));
-
-    check("Reject invalid doctor data",
-        !operations.addDoctor(
-            "D007",
-            "",
-            "Surgery",
-            "Cairo"
-        ));
-
-    check("Add appointment A011",
-        operations.addAppointment(
-            "A011",
-            "2026-11-15",
-            "D006"
-        ));
-
-    check("New appointment exists in primary index",
-        prim.findAppointment("A011") != -1);
-
-    check("New appointment exists in secondary index",
-        appDocIdx.search("D006") == vector<string>{"A011"});
-
-    check("Reject appointment with missing doctor",
-        !operations.addAppointment(
-            "A012",
-            "2026-11-16",
-            "D999"
-        ));
-
-    check("Reject duplicate appointment ID",
-        !operations.addAppointment(
-            "A011",
-            "2026-11-17",
-            "D006"
-        ));
-
-    // -------------------------------------
-    // UPDATE TESTS
-    // -------------------------------------
-
-    cout << "\nUPDATE TESTS\n";
-
-    check("Update doctor name",
-        operations.updateDoctorName("D006", "Khaled Hassan"));
-
-    check("Old doctor name removed from index",
-        docNameIdx.search("Khaled Mostafa").empty());
-
-    check("New doctor name exists in index",
-        docNameIdx.search("Khaled Hassan") == vector<string>{"D006"});
-
-    check("Update appointment date",
-        operations.updateAppointmentDate("A011", "2026-12-01"));
-
-    char updatedAppointment[APPOINTMENT_RECORD_SIZE];
-
-    int updatedAppointmentPos = prim.findAppointment("A011");
-
-    int updatedAppointmentOffset =
-        prim.getAppointmentsIndex()[updatedAppointmentPos].offset;
-
-    storage.readAt(
-        "appointments.dat",
-        updatedAppointmentOffset,
-        updatedAppointment,
-        APPOINTMENT_RECORD_SIZE
+    QueryEngine queryEngine(
+        storage,
+        primary,
+        docNameIdx,
+        docSpecIdx,
+        appDocIdx
     );
 
-    check("Appointment date changed in file",
-        string(updatedAppointment + 15, 30) ==
-        "2026-12-01                    ");
 
-    check("Update doctor ID D006 to D007",
-        operations.updateDoctorID("D006", "D007"));
+    cout << "\nSystem initialized successfully!\n";
 
-    check("Old doctor ID no longer exists",
-        prim.findDoctor("D006") == -1);
 
-    check("New doctor ID exists",
-        prim.findDoctor("D007") != -1);
+    // ---------------------------------
+    // 7. Main Menu Loop
+    // ---------------------------------
 
-    check("Doctor name index updated after ID change",
-        docNameIdx.search("Khaled Hassan") == vector<string>{"D007"});
+    int choice;
 
-    check("Doctor specialty index updated after ID change",
-        docSpecIdx.search("Ophthalmology") == vector<string>{"D007"});
+    while (true) {
 
-    check("Appointment index updated after doctor ID change",
-        appDocIdx.search("D007") == vector<string>{"A011"});
+        displayMenu();
 
-    // -------------------------------------
-    // DELETE TESTS
-    // -------------------------------------
+        if (!(cin >> choice)) {
 
-    cout << "\nDELETE TESTS\n";
+            cout << "Invalid input. Please enter a number.\n";
 
-    // Doctor cannot be deleted while appointments still exist.
-    check("Reject deleting doctor with appointments",
-        !operations.deleteDoctor("D007"));
+            cin.clear();
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
 
-    check("Delete appointment A011",
-        operations.deleteAppointment("A011"));
+            continue;
+        }
 
-    check("Deleted appointment removed from primary index",
-        prim.findAppointment("A011") == -1);
+        cin.ignore(numeric_limits<streamsize>::max(), '\n');
 
-    check("Deleted appointment removed from secondary index",
-        appDocIdx.search("D007").empty());
 
-    check("Delete doctor D007",
-        operations.deleteDoctor("D007"));
+        // ---------------------------------
+        // OPTION 1: Add New Doctor
+        // ---------------------------------
 
-    check("Deleted doctor removed from primary index",
-        prim.findDoctor("D007") == -1);
+        if (choice == 1) {
 
-    check("Deleted doctor removed from name index",
-        docNameIdx.search("Khaled Hassan").empty());
+            string id, name, specialty, address;
 
-    check("Deleted doctor removed from specialty index",
-        docSpecIdx.search("Ophthalmology").empty());
+            cout << "\nEnter Doctor ID: ";
+            getline(cin, id);
 
-    // -------------------------------------
-    // AVAIL LIST REUSE TESTS
-    // -------------------------------------
+            cout << "Enter Doctor Name: ";
+            getline(cin, name);
 
-    cout << "\nAVAIL LIST REUSE TESTS\n";
+            cout << "Enter Doctor Specialty: ";
+            getline(cin, specialty);
 
-    check("Add doctor D008 using available record",
-        operations.addDoctor(
-            "D008",
-            "Nour Ahmed",
-            "Dentistry",
-            "Giza"
-        ));
+            cout << "Enter Doctor Address: ";
+            getline(cin, address);
 
-    check("Add appointment A012 using available record",
-        operations.addAppointment(
-            "A012",
-            "2026-12-05",
-            "D008"
-        ));
 
-    check("Reused doctor record is indexed",
-        prim.findDoctor("D008") != -1);
+            operations.addDoctor(id, name, specialty, address);
 
-    check("Reused appointment record is indexed",
-        prim.findAppointment("A012") != -1);
+            // if (operations.addDoctor(id, name, specialty, address))
+            //     cout << "\nDoctor added successfully!\n";
 
-    check("Delete reused appointment A012",
-        operations.deleteAppointment("A012"));
+            // else
+            //     cout << "\nFailed to add Doctor.\n";
+        }
 
-    check("Delete reused doctor D008",
-        operations.deleteDoctor("D008"));
 
-    cout << "\nALL OPERATIONS MANAGER TESTS COMPLETED!\n";
+        // ---------------------------------
+        // OPTION 2: Add New Appointment
+        // ---------------------------------
+
+        else if (choice == 2) {
+
+            string appointmentID, date, doctorID;
+
+            cout << "\nEnter Appointment ID: ";
+            getline(cin, appointmentID);
+
+            cout << "Enter Appointment Date: ";
+            getline(cin, date);
+
+            cout << "Enter Doctor ID: ";
+            getline(cin, doctorID);
+
+
+            if (operations.addAppointment(
+                appointmentID,
+                date,
+                doctorID
+            ))
+
+                cout << "\nAppointment added successfully!\n";
+
+            else
+                cout << "\nFailed to add Appointment.\n";
+        }
+
+
+        // ---------------------------------
+        // OPTION 3: Update Doctor Name
+        // ---------------------------------
+
+        else if (choice == 3) {
+
+            string id, newName;
+
+            cout << "\nEnter Doctor ID: ";
+            getline(cin, id);
+
+            cout << "Enter New Doctor Name: ";
+            getline(cin, newName);
+
+
+            if (operations.updateDoctorName(id, newName))
+                cout << "\nDoctor Name updated successfully!\n";
+
+            else
+                cout << "\nFailed to update Doctor Name.\n";
+        }
+
+
+        // ---------------------------------
+        // OPTION 4: Update Doctor ID
+        // ---------------------------------
+
+        else if (choice == 4) {
+
+            string oldID, newID;
+
+            cout << "\nEnter Current Doctor ID: ";
+            getline(cin, oldID);
+
+            cout << "Enter New Doctor ID: ";
+            getline(cin, newID);
+
+
+            if (operations.updateDoctorID(oldID, newID))
+                cout << "\nDoctor ID updated successfully!\n";
+
+            else
+                cout << "\nFailed to update Doctor ID.\n";
+        }
+
+
+        // ---------------------------------
+        // OPTION 5: Update Appointment Date
+        // ---------------------------------
+
+        else if (choice == 5) {
+
+            string id, newDate;
+
+            cout << "\nEnter Appointment ID: ";
+            getline(cin, id);
+
+            cout << "Enter New Appointment Date: ";
+            getline(cin, newDate);
+
+
+            if (operations.updateAppointmentDate(id, newDate))
+                cout << "\nAppointment Date updated successfully!\n";
+
+            else
+                cout << "\nFailed to update Appointment Date.\n";
+        }
+
+
+        // ---------------------------------
+        // OPTION 6: Delete Appointment
+        // ---------------------------------
+
+        else if (choice == 6) {
+
+            string id;
+
+            cout << "\nEnter Appointment ID to delete: ";
+            getline(cin, id);
+
+
+            if (operations.deleteAppointment(id))
+                cout << "\nAppointment deleted successfully!\n";
+
+            else
+                cout << "\nFailed to delete Appointment.\n";
+        }
+
+
+        // ---------------------------------
+        // OPTION 7: Delete Doctor
+        // ---------------------------------
+
+        else if (choice == 7) {
+
+            string id;
+
+            cout << "\nEnter Doctor ID to delete: ";
+            getline(cin, id);
+
+
+            if (operations.deleteDoctor(id))
+                cout << "\nDoctor deleted successfully!\n";
+
+            else
+                cout << "\nFailed to delete Doctor.\n";
+        }
+
+
+        // ---------------------------------
+        // OPTION 8: Print Doctor Info
+        // ---------------------------------
+
+        else if (choice == 8) {
+
+            string id;
+
+            cout << "\nEnter Doctor ID: ";
+            getline(cin, id);
+
+            string query =
+                "SELECT * FROM Doctors WHERE DoctorID = '" + id + "'";
+
+            queryEngine.executeQuery(query);
+        }
+
+
+        // ---------------------------------
+        // OPTION 9: Print Appointment Info
+        // ---------------------------------
+
+        else if (choice == 9) {
+
+            string id;
+
+            cout << "\nEnter Appointment ID: ";
+            getline(cin, id);
+
+            string query =
+                "SELECT * FROM Appointments WHERE AppointmentID = '" + id + "'";
+
+            queryEngine.executeQuery(query);
+        }
+
+
+        // ---------------------------------
+        // OPTION 10: Write Query
+        // ---------------------------------
+
+        else if (choice == 10) {
+
+            string query;
+
+            cout << "\nEnter your Query:\n";
+
+            getline(cin, query);
+
+            queryEngine.executeQuery(query);
+        }
+
+
+        // ---------------------------------
+        // OPTION 11: Exit
+        // ---------------------------------
+
+        else if (choice == 11) {
+
+            cout << "\nThank you for using Healthcare Management System!\n";
+
+            break;
+        }
+
+
+        // ---------------------------------
+        // INVALID CHOICE
+        // ---------------------------------
+
+        else {
+
+            cout << "\nInvalid choice. Please select from 1 to 11.\n";
+        }
+    }
 
     return 0;
 }

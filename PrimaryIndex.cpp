@@ -1,3 +1,4 @@
+
 #include "PrimaryIndex.h"
 #include <fstream>
 #include <algorithm>
@@ -11,13 +12,14 @@ string cleanKey(const char* data, int size) {
     string key(data, size);
 
     while (!key.empty() &&
-          (key.back() == ' ' || key.back() == '\0')) {
+           (key.back() == ' ' || key.back() == '\0')) {
 
         key.pop_back();
     }
 
     return key;
 }
+
 
 PrimaryIndex::PrimaryIndex(StorageManager& manager)
     : storage(manager) {
@@ -55,15 +57,24 @@ bool PrimaryIndex::buildOneIndex(
 
     ifstream file(filename, ios::binary | ios::ate);
 
-    if (!file.is_open())
+    if (!file.is_open()) {
+        cout << "Cannot open file: " << filename << endl;
         return false;
+    }
 
     long long fileSize = file.tellg();
     file.close();
 
-    if (fileSize < HEADER_SIZE ||
-        (fileSize - HEADER_SIZE) % recordSize != 0)
+    if (fileSize < HEADER_SIZE) {
+        cout << "ERROR: File is smaller than header!\n";
         return false;
+    }
+
+    if ((fileSize - HEADER_SIZE) % recordSize != 0) {
+        cout << "ERROR: Invalid file size!\n";
+        cout << "File: " << filename << endl;
+        return false;
+    }
 
     vector<IndexEntry> temp;
 
@@ -75,22 +86,26 @@ bool PrimaryIndex::buildOneIndex(
         long long offset =
             HEADER_SIZE + i * recordSize;
 
-        if (offset > INT_MAX)
+        if (offset > INT_MAX) {
+            cout << "ERROR: Offset exceeds INT_MAX!\n";
             return false;
+        }
 
-        char record[DOCTOR_RECORD_SIZE];
+        char record[DOCTOR_RECORD_SIZE] = {};
 
-        storage.readAt(
-            filename,
-            (int)offset,
-            record,
-            recordSize
-        );
+        if (!storage.readAt(
+                filename,
+                (int)offset,
+                record,
+                recordSize)) {
 
-        // Skip deleted records
+            cout << "ERROR: Could not read record!\n";
+            cout << "File: " << filename << endl;
+            return false;
+        }
+
         if (record[0] == '*')
             continue;
-
 
         string key = cleanKey(record, 15);
 
@@ -100,17 +115,21 @@ bool PrimaryIndex::buildOneIndex(
         temp.push_back({key, (int)offset});
     }
 
-
     sort(temp.begin(), temp.end(),
         [](const IndexEntry& a, const IndexEntry& b) {
             return a.key < b.key;
         });
 
-    // Check duplicate primary keys
     for (int i = 1; i < (int)temp.size(); i++) {
 
-        if (temp[i].key == temp[i - 1].key)
+        if (temp[i].key == temp[i - 1].key) {
+
+            cout << "ERROR: Duplicate Primary Key found!\n";
+            cout << "File: " << filename << endl;
+            cout << "Duplicate ID: " << temp[i].key << endl;
+
             return false;
+        }
     }
 
     index = temp;
@@ -125,15 +144,15 @@ bool PrimaryIndex::buildIndexes() {
     vector<IndexEntry> newAppointments;
 
     if (!buildOneIndex(
-        "doctors.dat",
-        DOCTOR_RECORD_SIZE,
-        newDoctors))
+            "doctors.dat",
+            DOCTOR_RECORD_SIZE,
+            newDoctors))
         return false;
 
     if (!buildOneIndex(
-        "appointments.dat",
-        APPOINTMENT_RECORD_SIZE,
-        newAppointments))
+            "appointments.dat",
+            APPOINTMENT_RECORD_SIZE,
+            newAppointments))
         return false;
 
     doctorsIndex = newDoctors;
@@ -148,6 +167,7 @@ int PrimaryIndex::findDoctor(const string& id) const {
     return binarySearch(doctorsIndex, id);
 }
 
+
 int PrimaryIndex::findAppointment(const string& id) const {
 
     return binarySearch(appointmentsIndex, id);
@@ -159,10 +179,10 @@ bool PrimaryIndex::addEntry(
     const string& key,
     int offset) {
 
-    if (key.empty() || offset < HEADER_SIZE ||
+    if (key.empty() ||
+        offset < HEADER_SIZE ||
         binarySearch(index, key) != -1)
         return false;
-
 
     auto position = lower_bound(
         index.begin(),
@@ -173,16 +193,17 @@ bool PrimaryIndex::addEntry(
         }
     );
 
-
     index.insert(position, {key, offset});
 
     return true;
 }
 
+
 bool PrimaryIndex::addDoctor(const string& id, int offset) {
 
     return addEntry(doctorsIndex, id, offset);
 }
+
 
 bool PrimaryIndex::addAppointment(const string& id, int offset) {
 
@@ -199,16 +220,17 @@ bool PrimaryIndex::deleteEntry(
     if (position == -1)
         return false;
 
-
     index.erase(index.begin() + position);
 
     return true;
 }
 
+
 bool PrimaryIndex::deleteDoctor(const string& id) {
 
     return deleteEntry(doctorsIndex, id);
 }
+
 
 bool PrimaryIndex::deleteAppointment(const string& id) {
 
@@ -229,17 +251,13 @@ bool PrimaryIndex::updateKey(
     if (position == -1)
         return false;
 
-
     if (oldKey != newKey &&
         binarySearch(index, newKey) != -1)
         return false;
 
-
     int oldOffset = index[position].offset;
 
-
     index.erase(index.begin() + position);
-
 
     auto newPosition = lower_bound(
         index.begin(),
@@ -250,11 +268,11 @@ bool PrimaryIndex::updateKey(
         }
     );
 
-
     index.insert(newPosition, {newKey, oldOffset});
 
     return true;
 }
+
 
 bool PrimaryIndex::updateDoctorID(
     const string& oldID,
@@ -262,6 +280,7 @@ bool PrimaryIndex::updateDoctorID(
 
     return updateKey(doctorsIndex, oldID, newID);
 }
+
 
 bool PrimaryIndex::updateAppointmentID(
     const string& oldID,
@@ -275,6 +294,7 @@ const vector<IndexEntry>& PrimaryIndex::getDoctorsIndex() const {
 
     return doctorsIndex;
 }
+
 
 const vector<IndexEntry>& PrimaryIndex::getAppointmentsIndex() const {
 
