@@ -8,8 +8,10 @@
       "args": [],
       "stopAtEntry": false,
       "externalConsole": true,
+
       "cwd": "c:/Users/User/Downloads/HealthCare_System/HealthCare_System",
       "program": "c:/Users/User/Downloads/HealthCare_System/HealthCare_System/build/Debug/outDebug",
+
       "MIMode": "gdb",
       "miDebuggerPath": "gdb",
       "setupCommands": [
