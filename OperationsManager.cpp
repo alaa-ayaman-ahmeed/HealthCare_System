@@ -4,12 +4,71 @@
 #include <iostream>
 #include <fstream>
 #include <cstring>
-#include <algorithm>
 #include <vector>
+#include <climits>
 
 using namespace std;
 
 
+// Validate a Free List record offset.
+static bool isValidFreeOffset(
+    StorageManager& storage,
+    const string& filename,
+    int offset,
+    int recordSize,
+    long long fileEnd
+) {
+    if (offset < HEADER_SIZE)
+        return false;
+
+    if ((offset - HEADER_SIZE) % recordSize != 0)
+        return false;
+
+    if (fileEnd < HEADER_SIZE + recordSize)
+        return false;
+
+    if (offset > fileEnd - recordSize)
+        return false;
+
+    char marker;
+
+    if (!storage.readAt(filename, offset, &marker, 1))
+        return false;
+
+    return marker == '*';
+}
+
+
+// Validate the Free List head and its next pointer.
+static bool isValidFreeHead(
+    StorageManager& storage,
+    const string& filename,
+    int head,
+    int recordSize,
+    long long fileEnd
+) {
+    if (head == -1)
+        return true;
+
+    if (!isValidFreeOffset(
+            storage, filename, head, recordSize, fileEnd))
+        return false;
+
+    int nextOffset;
+
+    if (!storage.readAt(
+            filename,
+            head + 1,
+            reinterpret_cast<char*>(&nextOffset),
+            sizeof(int)))
+        return false;
+
+    if (nextOffset == -1)
+        return true;
+
+    return isValidFreeOffset(
+        storage, filename, nextOffset, recordSize, fileEnd);
+}
 
 
 OperationsManager::OperationsManager(
@@ -27,23 +86,20 @@ OperationsManager::OperationsManager(
 }
 
 
-
-
-// Get the end of a data file.
-// Used when there is no deleted space to reuse.
-
-int OperationsManager::getFileEnd(const string& filename) {
+long long OperationsManager::getFileEnd(const string& filename) {
 
     ifstream file(filename, ios::binary | ios::ate);
 
     if (!file.is_open())
         return -1;
 
-    return (int)file.tellg();
+    long long result = static_cast<long long>(file.tellg());
+
+    file.close();
+
+    return result;
 }
 
-
-// Remove trailing spaces from a field.
 
 string OperationsManager::cleanField(const char* data, int size) {
 
@@ -51,15 +107,12 @@ string OperationsManager::cleanField(const char* data, int size) {
 
     while (!result.empty() &&
            (result.back() == ' ' || result.back() == '\0')) {
-
         result.pop_back();
     }
 
     return result;
 }
 
-
-// Get the actual file offset of a Doctor.
 
 int OperationsManager::getDoctorOffset(const string& id) {
 
@@ -72,8 +125,6 @@ int OperationsManager::getDoctorOffset(const string& id) {
 }
 
 
-// Get the actual file offset of an Appointment.
-
 int OperationsManager::getAppointmentOffset(const string& id) {
 
     int pos = primary.findAppointment(id);
@@ -85,13 +136,12 @@ int OperationsManager::getAppointmentOffset(const string& id) {
 }
 
 
-// Check Doctor fields.
-
 bool OperationsManager::validDoctor(
     const string& id,
     const string& name,
     const string& specialty,
-    const string& address) {
+    const string& address
+) {
 
     return !id.empty() &&
            !name.empty() &&
@@ -104,12 +154,11 @@ bool OperationsManager::validDoctor(
 }
 
 
-// Check Appointment fields.
-
 bool OperationsManager::validAppointment(
     const string& id,
     const string& date,
-    const string& doctorID) {
+    const string& doctorID
+) {
 
     return !id.empty() &&
            !date.empty() &&
@@ -120,111 +169,106 @@ bool OperationsManager::validAppointment(
 }
 
 
-
+// ==========================================
 // ADD DOCTOR
-
+// ==========================================
 
 bool OperationsManager::addDoctor(
     const string& id,
     const string& name,
     const string& specialty,
-    const string& address) {
-
-    // 1. Validate input.
+    const string& address
+) {
 
     if (!validDoctor(id, name, specialty, address)) {
-
         cout << "Invalid Doctor data or field size exceeded!\n";
         return false;
     }
 
-
-    // 2. Check duplicate Doctor ID.
-
     if (primary.findDoctor(id) != -1) {
-
         cout << "Doctor already exists!\n";
         return false;
     }
 
+    const string filename = "doctors.dat";
 
-    // 3. Prepare the Doctor record.
+    long long fileEnd = getFileEnd(filename);
 
-    char buffer[DOCTOR_RECORD_SIZE];
-
-    storage.saveDoctor(
-        id,
-        name,
-        specialty,
-        address,
-        buffer
-    );
-
-
-    // 4. Check the AVAIL LIST.
-
-    int offset = storage.readHeader("doctors.dat");
-
-    if (offset != -1) {
-
-        // There is a deleted record available.
-
-        int nextOffset;
-
-        storage.readAt(
-            "doctors.dat",
-            offset + 1,
-            reinterpret_cast<char*>(&nextOffset),
-            sizeof(int)
-        );
-
-        // Remove the first deleted record from AVAIL LIST.
-
-        storage.writeHeader("doctors.dat", nextOffset);
-
+    if (fileEnd < HEADER_SIZE ||
+        fileEnd > INT_MAX ||
+        (fileEnd - HEADER_SIZE) % DOCTOR_RECORD_SIZE != 0) {
+        cout << "Error: Doctors file has an invalid size!\n";
+        return false;
     }
-    else {
 
-        // No deleted records.
-        // Append at the end of the file.
+    int oldHead = storage.readHeader(filename);
 
-        offset = getFileEnd("doctors.dat");
+    if (!isValidFreeHead(
+            storage, filename, oldHead,
+            DOCTOR_RECORD_SIZE, fileEnd)) {
+        cout << "Error: Invalid Doctors Free List!\n";
+        return false;
+    }
 
-        if (offset < 0) {
-            cout << "Cannot open Doctors file!\n";
+    int offset;
+    int nextOffset = -1;
+    char oldRecord[DOCTOR_RECORD_SIZE];
+
+    bool reusing = (oldHead != -1);
+
+    if (reusing) {
+
+        offset = oldHead;
+
+        if (!storage.readAt(
+                filename, offset,
+                oldRecord, DOCTOR_RECORD_SIZE)) {
+            cout << "Error: Could not read deleted Doctor!\n";
+            return false;
+        }
+
+        if (!storage.readAt(
+                filename, offset + 1,
+                reinterpret_cast<char*>(&nextOffset),
+                sizeof(int))) {
+            cout << "Error: Could not read Free List pointer!\n";
             return false;
         }
     }
+    else {
+        offset = static_cast<int>(fileEnd);
+    }
 
+    char buffer[DOCTOR_RECORD_SIZE];
+    storage.saveDoctor(id, name, specialty, address, buffer);
 
-    // 5. Write the new Doctor.
+    if (!storage.writeAt(
+            filename, offset, buffer, DOCTOR_RECORD_SIZE)) {
+        cout << "Error: Could not write Doctor record!\n";
+        return false;
+    }
 
-    storage.writeAt(
-        "doctors.dat",
-        offset,
-        buffer,
-        DOCTOR_RECORD_SIZE
-    );
+    if (reusing && !storage.writeHeader(filename, nextOffset)) {
 
+        storage.writeAt(
+            filename, offset, oldRecord, DOCTOR_RECORD_SIZE);
 
-    // 6. Update Primary Index.
+        cout << "Error: Could not update Doctors Free List!\n";
+        return false;
+    }
 
     if (!primary.addDoctor(id, offset)) {
-
         cout << "Could not update Doctor primary index!\n";
         return false;
     }
 
+    if (!docNameIdx.add(name, id))
+        cout << "Warning: Could not update Doctor Name index!\n";
 
-    // 7. Update Secondary Indexes.
-
-    docNameIdx.add(name, id);
-
-    docSpecIdx.add(specialty, id);
-
+    if (!docSpecIdx.add(specialty, id))
+        cout << "Warning: Could not update Doctor Specialty index!\n";
 
     cout << "Doctor added successfully!\n";
-
     return true;
 }
 
@@ -236,102 +280,100 @@ bool OperationsManager::addDoctor(
 bool OperationsManager::addAppointment(
     const string& id,
     const string& date,
-    const string& doctorID) {
-
-    // 1. Validate input.
+    const string& doctorID
+) {
 
     if (!validAppointment(id, date, doctorID)) {
-
         cout << "Invalid Appointment data or field size exceeded!\n";
         return false;
     }
 
-
-    // 2. Check duplicate Appointment ID.
-
     if (primary.findAppointment(id) != -1) {
-
         cout << "Appointment already exists!\n";
         return false;
     }
 
-
-    // 3. Check that the Doctor exists.
-
     if (primary.findDoctor(doctorID) == -1) {
-
         cout << "Doctor does not exist!\n";
         return false;
     }
 
+    const string filename = "appointments.dat";
 
-    // 4. Prepare Appointment record.
+    long long fileEnd = getFileEnd(filename);
 
-    char buffer[APPOINTMENT_RECORD_SIZE];
-
-    storage.saveAppointment(
-        id,
-        date,
-        doctorID,
-        buffer
-    );
-
-
-    // 5. Check AVAIL LIST.
-
-    int offset = storage.readHeader("appointments.dat");
-
-    if (offset != -1) {
-
-        int nextOffset;
-
-        storage.readAt(
-            "appointments.dat",
-            offset + 1,
-            reinterpret_cast<char*>(&nextOffset),
-            sizeof(int)
-        );
-
-        storage.writeHeader("appointments.dat", nextOffset);
-
+    if (fileEnd < HEADER_SIZE ||
+        fileEnd > INT_MAX ||
+        (fileEnd - HEADER_SIZE) % APPOINTMENT_RECORD_SIZE != 0) {
+        cout << "Error: Appointments file has an invalid size!\n";
+        return false;
     }
-    else {
 
-        offset = getFileEnd("appointments.dat");
+    int oldHead = storage.readHeader(filename);
 
-        if (offset < 0) {
-            cout << "Cannot open Appointments file!\n";
+    if (!isValidFreeHead(
+            storage, filename, oldHead,
+            APPOINTMENT_RECORD_SIZE, fileEnd)) {
+        cout << "Error: Invalid Appointments Free List!\n";
+        return false;
+    }
+
+    int offset;
+    int nextOffset = -1;
+    char oldRecord[APPOINTMENT_RECORD_SIZE];
+
+    bool reusing = (oldHead != -1);
+
+    if (reusing) {
+
+        offset = oldHead;
+
+        if (!storage.readAt(
+                filename, offset,
+                oldRecord, APPOINTMENT_RECORD_SIZE)) {
+            cout << "Error: Could not read deleted Appointment!\n";
+            return false;
+        }
+
+        if (!storage.readAt(
+                filename, offset + 1,
+                reinterpret_cast<char*>(&nextOffset),
+                sizeof(int))) {
+            cout << "Error: Could not read Free List pointer!\n";
             return false;
         }
     }
+    else {
+        offset = static_cast<int>(fileEnd);
+    }
 
+    char buffer[APPOINTMENT_RECORD_SIZE];
+    storage.saveAppointment(id, date, doctorID, buffer);
 
-    // 6. Write Appointment.
+    if (!storage.writeAt(
+            filename, offset, buffer, APPOINTMENT_RECORD_SIZE)) {
+        cout << "Error: Could not write Appointment record!\n";
+        return false;
+    }
 
-    storage.writeAt(
-        "appointments.dat",
-        offset,
-        buffer,
-        APPOINTMENT_RECORD_SIZE
-    );
+    if (reusing && !storage.writeHeader(filename, nextOffset)) {
 
+        storage.writeAt(
+            filename, offset, oldRecord, APPOINTMENT_RECORD_SIZE);
 
-    // 7. Update Primary Index.
+        cout << "Error: Could not update Appointments Free List!\n";
+        return false;
+    }
 
     if (!primary.addAppointment(id, offset)) {
-
         cout << "Could not update Appointment primary index!\n";
         return false;
     }
 
-
-    // 8. Update Secondary Index.
-
-    appDocIdx.add(doctorID, id);
-
+    if (!appDocIdx.add(doctorID, id))
+        cout << "Warning: Could not update Appointment secondary index!\n";
 
     cout << "Appointment added successfully!\n";
-
     return true;
 }
 
@@ -342,89 +384,93 @@ bool OperationsManager::addAppointment(
 
 bool OperationsManager::deleteDoctor(const string& id) {
 
-    // 1. Find Doctor.
-
     int offset = getDoctorOffset(id);
 
     if (offset == -1) {
-
         cout << "Doctor does not exist!\n";
         return false;
     }
 
-
-    // 2. Do not delete a Doctor who still has appointments.
-
     vector<string> appointments = appDocIdx.search(id);
 
     if (!appointments.empty()) {
-
         cout << "Cannot delete Doctor: appointments still exist!\n";
         return false;
     }
 
+    const string filename = "doctors.dat";
 
-    // 3. Read the Doctor record.
+    long long fileEnd = getFileEnd(filename);
 
-    char buffer[DOCTOR_RECORD_SIZE];
+    if (offset < HEADER_SIZE ||
+        (offset - HEADER_SIZE) % DOCTOR_RECORD_SIZE != 0 ||
+        fileEnd < HEADER_SIZE + DOCTOR_RECORD_SIZE ||
+        offset > fileEnd - DOCTOR_RECORD_SIZE) {
+        cout << "Error: Invalid Doctor record offset!\n";
+        return false;
+    }
 
-    storage.readAt(
-        "doctors.dat",
-        offset,
-        buffer,
-        DOCTOR_RECORD_SIZE
-    );
+    char originalRecord[DOCTOR_RECORD_SIZE];
 
-    string name = cleanField(buffer + 15, 30);
-    string specialty = cleanField(buffer + 45, 20);
+    if (!storage.readAt(
+            filename, offset,
+            originalRecord, DOCTOR_RECORD_SIZE)) {
+        cout << "Error: Could not read Doctor record!\n";
+        return false;
+    }
 
+    if (originalRecord[0] == '*') {
+        cout << "Error: Doctor is already deleted!\n";
+        return false;
+    }
 
-    // 4. Get the current AVAIL LIST head.
+    string name = cleanField(originalRecord + 15, 30);
+    string specialty = cleanField(originalRecord + 45, 20);
 
-    int oldHead = storage.readHeader("doctors.dat");
+    int oldHead = storage.readHeader(filename);
 
+    if (!isValidFreeHead(
+            storage, filename, oldHead,
+            DOCTOR_RECORD_SIZE, fileEnd)) {
+        cout << "Error: Invalid Doctors Free List!\n";
+        return false;
+    }
 
-    // 5. Mark the record as deleted.
+    char deletedRecord[DOCTOR_RECORD_SIZE];
 
-    char marker = '*';
+    memcpy(deletedRecord, originalRecord, DOCTOR_RECORD_SIZE);
 
-    storage.writeAt(
-        "doctors.dat",
-        offset,
-        &marker,
-        1
-    );
+    deletedRecord[0] = '*';
 
-
-    // 6. Store the old head inside this deleted record.
-
-    storage.writeAt(
-        "doctors.dat",
-        offset + 1,
-        reinterpret_cast<const char*>(&oldHead),
+    memcpy(
+        deletedRecord + 1,
+        &oldHead,
         sizeof(int)
     );
 
+    if (!storage.writeAt(
+            filename, offset,
+            deletedRecord, DOCTOR_RECORD_SIZE)) {
+        cout << "Error: Could not mark Doctor as deleted!\n";
+        return false;
+    }
 
-    // 7. Make this record the new AVAIL LIST head.
+    if (!storage.writeHeader(filename, offset)) {
 
-    storage.writeHeader("doctors.dat", offset);
+        storage.writeAt(
+            filename, offset,
+            originalRecord, DOCTOR_RECORD_SIZE);
 
-
-    // 8. Remove from Primary Index.
+        cout << "Error: Could not update Doctors Free List!\n";
+        return false;
+    }
 
     primary.deleteDoctor(id);
 
-
-    // 9. Remove from Secondary Indexes.
-
     docNameIdx.remove(name, id);
-
     docSpecIdx.remove(specialty, id);
 
-
     cout << "Doctor deleted successfully!\n";
-
     return true;
 }
 
@@ -435,75 +481,84 @@ bool OperationsManager::deleteDoctor(const string& id) {
 
 bool OperationsManager::deleteAppointment(const string& id) {
 
-    // 1. Find Appointment.
-
     int offset = getAppointmentOffset(id);
 
     if (offset == -1) {
-
         cout << "Appointment does not exist!\n";
         return false;
     }
 
+    const string filename = "appointments.dat";
 
-    // 2. Read Appointment record.
+    long long fileEnd = getFileEnd(filename);
 
-    char buffer[APPOINTMENT_RECORD_SIZE];
+    if (offset < HEADER_SIZE ||
+        (offset - HEADER_SIZE) % APPOINTMENT_RECORD_SIZE != 0 ||
+        fileEnd < HEADER_SIZE + APPOINTMENT_RECORD_SIZE ||
+        offset > fileEnd - APPOINTMENT_RECORD_SIZE) {
+        cout << "Error: Invalid Appointment record offset!\n";
+        return false;
+    }
 
-    storage.readAt(
-        "appointments.dat",
-        offset,
-        buffer,
-        APPOINTMENT_RECORD_SIZE
-    );
+    char originalRecord[APPOINTMENT_RECORD_SIZE];
 
-    string doctorID = cleanField(buffer + 45, 15);
+    if (!storage.readAt(
+            filename, offset,
+            originalRecord, APPOINTMENT_RECORD_SIZE)) {
+        cout << "Error: Could not read Appointment record!\n";
+        return false;
+    }
 
+    if (originalRecord[0] == '*') {
+        cout << "Error: Appointment is already deleted!\n";
+        return false;
+    }
 
-    // 3. Get old AVAIL LIST head.
+    string doctorID = cleanField(originalRecord + 45, 15);
 
-    int oldHead = storage.readHeader("appointments.dat");
+    int oldHead = storage.readHeader(filename);
 
+    if (!isValidFreeHead(
+            storage, filename, oldHead,
+            APPOINTMENT_RECORD_SIZE, fileEnd)) {
+        cout << "Error: Invalid Appointments Free List!\n";
+        return false;
+    }
 
-    // 4. Mark record as deleted.
+    char deletedRecord[APPOINTMENT_RECORD_SIZE];
 
-    char marker = '*';
+    memcpy(deletedRecord, originalRecord, APPOINTMENT_RECORD_SIZE);
 
-    storage.writeAt(
-        "appointments.dat",
-        offset,
-        &marker,
-        1
-    );
+    deletedRecord[0] = '*';
 
-
-    // 5. Store old head as next pointer.
-
-    storage.writeAt(
-        "appointments.dat",
-        offset + 1,
-        reinterpret_cast<const char*>(&oldHead),
+    memcpy(
+        deletedRecord + 1,
+        &oldHead,
         sizeof(int)
     );
 
+    if (!storage.writeAt(
+            filename, offset,
+            deletedRecord, APPOINTMENT_RECORD_SIZE)) {
+        cout << "Error: Could not mark Appointment as deleted!\n";
+        return false;
+    }
 
-    // 6. Update Header.
+    if (!storage.writeHeader(filename, offset)) {
 
-    storage.writeHeader("appointments.dat", offset);
+        storage.writeAt(
+            filename, offset,
+            originalRecord, APPOINTMENT_RECORD_SIZE);
 
-
-    // 7. Remove from Primary Index.
+        cout << "Error: Could not update Appointments Free List!\n";
+        return false;
+    }
 
     primary.deleteAppointment(id);
 
-
-    // 8. Remove from Secondary Index.
-
     appDocIdx.remove(doctorID, id);
 
-
     cout << "Appointment deleted successfully!\n";
-
     return true;
 }
 
@@ -514,180 +569,115 @@ bool OperationsManager::deleteAppointment(const string& id) {
 
 bool OperationsManager::updateDoctorName(
     const string& id,
-    const string& newName) {
-
-    // 1. Validate new name.
+    const string& newName
+) {
 
     if (newName.empty() || newName.size() > 30) {
-
         cout << "Invalid Doctor Name!\n";
         return false;
     }
 
-
-    // 2. Find Doctor.
-
     int offset = getDoctorOffset(id);
 
     if (offset == -1) {
-
         cout << "Doctor does not exist!\n";
         return false;
     }
 
+    char oldBuffer[30];
 
-    // 3. Read old Doctor name.
+    if (!storage.readAt(
+            "doctors.dat", offset + 15,
+            oldBuffer, 30)) {
+        cout << "Error: Could not read Doctor name!\n";
+        return false;
+    }
 
-    char buffer[30];
-
-    storage.readAt(
-        "doctors.dat",
-        offset + 15,
-        buffer,
-        30
-    );
-
-    string oldName = cleanField(buffer, 30);
-
-
-    // 4. Prepare new padded name.
+    string oldName = cleanField(oldBuffer, 30);
 
     char newBuffer[30];
 
     memset(newBuffer, ' ', 30);
-
     memcpy(newBuffer, newName.c_str(), newName.size());
 
-
-    // 5. Update Doctor Name in file.
-
-    storage.writeAt(
-        "doctors.dat",
-        offset + 15,
-        newBuffer,
-        30
-    );
-
-
-    // 6. Update Secondary Index.
+    if (!storage.writeAt(
+            "doctors.dat", offset + 15,
+            newBuffer, 30)) {
+        cout << "Error: Could not update Doctor name!\n";
+        return false;
+    }
 
     if (!docNameIdx.changeKey(oldName, newName, id)) {
-
         cout << "Warning: Could not update name index!\n";
         return false;
     }
 
-
     cout << "Doctor Name updated successfully!\n";
-
     return true;
 }
 
 
 // ==========================================
-// UPDATE DOCTOR ID (PRIMARY KEY)
+// UPDATE DOCTOR ID
 // ==========================================
 
 bool OperationsManager::updateDoctorID(
     const string& oldID,
-    const string& newID) {
-
-    // 1. Validate new ID.
+    const string& newID
+) {
 
     if (newID.empty() || newID.size() > 15) {
-
         cout << "Invalid Doctor ID!\n";
         return false;
     }
 
-
-    // 2. Check old Doctor exists.
-
     int offset = getDoctorOffset(oldID);
 
     if (offset == -1) {
-
         cout << "Doctor does not exist!\n";
         return false;
     }
 
-
-    // 3. Check duplicate new ID.
-
     if (oldID != newID &&
         primary.findDoctor(newID) != -1) {
-
         cout << "New Doctor ID already exists!\n";
         return false;
     }
 
-
     if (oldID == newID)
         return true;
 
+    char record[DOCTOR_RECORD_SIZE];
 
-    // 4. Read old Doctor record.
+    if (!storage.readAt(
+            "doctors.dat", offset,
+            record, DOCTOR_RECORD_SIZE)) {
+        cout << "Error: Could not read Doctor record!\n";
+        return false;
+    }
 
-    char buffer[DOCTOR_RECORD_SIZE];
-
-    storage.readAt(
-        "doctors.dat",
-        offset,
-        buffer,
-        DOCTOR_RECORD_SIZE
-    );
-
-    string name = cleanField(buffer + 15, 30);
-    string specialty = cleanField(buffer + 45, 20);
-
-
-    // 5. Prepare new ID.
+    string name = cleanField(record + 15, 30);
+    string specialty = cleanField(record + 45, 20);
 
     char newBuffer[15];
 
     memset(newBuffer, ' ', 15);
-
     memcpy(newBuffer, newID.c_str(), newID.size());
 
-
-    // 6. Update Doctor ID in data file.
-
-    storage.writeAt(
-        "doctors.dat",
-        offset,
-        newBuffer,
-        15
-    );
-
-
-    // 7. Update Primary Index (sorted insertion).
+    if (!storage.writeAt(
+            "doctors.dat", offset,
+            newBuffer, 15)) {
+        cout << "Error: Could not update Doctor ID!\n";
+        return false;
+    }
 
     if (!primary.updateDoctorID(oldID, newID)) {
-
         cout << "Could not update primary index!\n";
         return false;
     }
 
-
-    // 8. Update Doctor Name secondary index.
-
-    docNameIdx.replacePrimary(
-        name,
-        oldID,
-        newID
-    );
-
-
-    // 9. Update Doctor Specialty secondary index.
-
-    docSpecIdx.replacePrimary(
-        specialty,
-        oldID,
-        newID
-    );
-
-
-    // 10. Update all Appointment records that reference old ID.
+    docNameIdx.replacePrimary(name, oldID, newID);
+    docSpecIdx.replacePrimary(specialty, oldID, newID);
 
     vector<string> appointments = appDocIdx.search(oldID);
 
@@ -701,29 +691,20 @@ bool OperationsManager::updateDoctorID(
         char appDoctorID[15];
 
         memset(appDoctorID, ' ', 15);
+        memcpy(appDoctorID, newID.c_str(), newID.size());
 
-        memcpy(
-            appDoctorID,
-            newID.c_str(),
-            newID.size()
-        );
-
-        storage.writeAt(
-            "appointments.dat",
-            appOffset + 45,
-            appDoctorID,
-            15
-        );
+        if (!storage.writeAt(
+                "appointments.dat",
+                appOffset + 45,
+                appDoctorID,
+                15)) {
+            cout << "Warning: Could not update an Appointment record!\n";
+        }
     }
-
-
-    // 11. Update Appointment Doctor ID secondary index.
 
     appDocIdx.renameKey(oldID, newID);
 
-
     cout << "Doctor ID updated successfully!\n";
-
     return true;
 }
 
@@ -734,48 +715,35 @@ bool OperationsManager::updateDoctorID(
 
 bool OperationsManager::updateAppointmentDate(
     const string& id,
-    const string& newDate) {
-
-    // 1. Validate date.
+    const string& newDate
+) {
 
     if (newDate.empty() || newDate.size() > 30) {
-
         cout << "Invalid Appointment Date!\n";
         return false;
     }
 
-
-    // 2. Find Appointment.
-
     int offset = getAppointmentOffset(id);
 
     if (offset == -1) {
-
         cout << "Appointment does not exist!\n";
         return false;
     }
 
-
-    // 3. Prepare new date.
-
     char newBuffer[30];
 
     memset(newBuffer, ' ', 30);
-
     memcpy(newBuffer, newDate.c_str(), newDate.size());
 
-
-    // 4. Update date directly in file.
-
-    storage.writeAt(
-        "appointments.dat",
-        offset + 15,
-        newBuffer,
-        30
-    );
-
+    if (!storage.writeAt(
+            "appointments.dat",
+            offset + 15,
+            newBuffer,
+            30)) {
+        cout << "Error: Could not update Appointment date!\n";
+        return false;
+    }
 
     cout << "Appointment Date updated successfully!\n";
-
     return true;
 }

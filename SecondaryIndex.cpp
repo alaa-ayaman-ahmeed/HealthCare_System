@@ -100,54 +100,101 @@ SecondaryIndex::SecondaryIndex(const string& keyFile, const string& listFile, in
     load();
 }
 
-bool SecondaryIndex::add(const string& secKey, const string& primaryKey) {
-    string key = normalize(secKey, keySize);
-    string pk  = normalize(primaryKey, PK_SIZE);
-    if (key.empty() || pk.empty()) return false;
 
-    bool found;
+bool SecondaryIndex::add(
+    const string& secKey,
+    const string& primaryKey
+) {
+
+    string key = normalize(secKey, keySize);
+    string pk = normalize(primaryKey, PK_SIZE);
+
+    if (key.empty() || pk.empty())
+        return false;
+
+    bool found = false;
     int pos = findKey(key, found);
 
+
+    // Case 1: New secondary key
+
     if (!found) {
-        // brand new secondary key: new node (next = -1) + insert key in sorted place (shifting)
+
         int n = nodeCount();
+
         writeNode(n, pk, -1);
-        SecEntry e;
-        e.key = key;
-        e.head = n;
-        entries.insert(entries.begin() + pos, e);   // vector::insert shifts the later entries
+
+        SecEntry entry;
+        entry.key = key;
+        entry.head = n;
+
+        entries.insert(entries.begin() + pos, entry);
+
         save();
+
         return true;
     }
 
-    // key exists: walk the chain to find the sorted position of pk
+
+    // Case 2: Existing secondary key
+
     int prev = -1;
     int cur = entries[pos].head;
+
     while (cur != -1) {
+
         string curPK;
         int curNext;
+
         readNode(cur, curPK, curNext);
-        if (curPK == pk) return false;     // duplicate pair
-        if (curPK > pk) break;             // insert before cur
+
+        // Prevent duplicate primary key
+
+        if (curPK == pk)
+            return false;
+
+        // Keep primary keys sorted
+
+        if (curPK > pk)
+            break;
+
         prev = cur;
         cur = curNext;
     }
 
+
+    // Create new node
+
     int n = nodeCount();
-    writeNode(n, pk, cur);                 // new node points to cur
+
+    writeNode(n, pk, cur);
+
+
+    // Insert at the beginning
 
     if (prev == -1) {
-        entries[pos].head = n;             // new first node
-        save();
+
+        entries[pos].head = n;
     }
+
+    // Insert in the middle or at the end
+
     else {
+
         string prevPK;
         int prevNext;
+
         readNode(prev, prevPK, prevNext);
-        writeNode(prev, prevPK, n);        // prev now points to the new node
+
+        writeNode(prev, prevPK, n);
     }
+
+
+    save();
+
     return true;
 }
+
 
 bool SecondaryIndex::remove(const string& secKey, const string& primaryKey) {
     string key = normalize(secKey, keySize);
